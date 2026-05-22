@@ -1,0 +1,14 @@
+# Secrets / runtime
+.env
+stack.env
+*.local
+*.key
+*.pem
+secrets/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
