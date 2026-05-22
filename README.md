@@ -1,10 +1,16 @@
-# AdGuard Home + Unbound — Docker Stack
+# AdGuard Home — Docker Stack
 
-Network-wide ads & trackers blocking DNS server (AdGuard Home) paired with
-a local recursive resolver (Unbound), deployed via Docker Compose.
+Network-wide ads & trackers blocking DNS server (AdGuard Home), deployed via
+Docker Compose.
 
 This repository ships a minimal stack designed to be deployed by a stack
 manager (Komodo, Portainer, Dockge, etc.) or directly with `docker compose`.
+
+Upstream resolution is handled by **Quad9 DoT** (encrypted DNS over TLS,
+no third-party logging, EU/CH-hosted). A previous version of this stack
+shipped Unbound as a recursive sidecar; that was removed in favor of a
+simpler single-container deployment — see commit history if you need the
+Unbound-based variant.
 
 ## Requirements
 
@@ -57,59 +63,78 @@ docker compose up -d
 4. **DNS server:** listen on `0.0.0.0`, port `53`.
 5. Finish the wizard. The UI is now reachable at `http://<host-ip>/`.
 
-## Point AdGuard Home at Unbound
+## Configure upstream DNS
 
-Once the wizard is done, configure Unbound as the only upstream:
+After the wizard, open **Settings → DNS settings** and paste the
+following into **Upstream DNS servers** (adjust the local-zone forwards
+to your environment — the example below routes local zones to a UDM SE
+at `10.5.9.1`):
 
-1. Open **Settings → DNS settings** in the AdGuard UI.
-2. **Upstream DNS servers** — replace the defaults with just:
-   ```
-   unbound
-   ```
-   Docker's embedded DNS resolves the service name to the Unbound
-   container's address on the internal `dnsnet` network (port 53).
-3. **Bootstrap DNS servers** — keep `1.1.1.1` and `9.9.9.9`. These are
-   only used to resolve hostnames inside DoH/DoT URLs, which Unbound
-   does not do; in practice they are rarely contacted because Unbound
-   talks to root servers by IP.
-4. Click **Test upstreams** and confirm OK.
-5. **DNSSEC enabled in AdGuard** — leave **off**. Unbound already
-   validates DNSSEC; enabling validation in both layers is redundant
-   and occasionally produces spurious SERVFAILs.
+```
+[/mtrolle.com/]10.5.9.1
+[/lokal/]10.5.9.1
+[/vpn/]10.5.9.1
+[/lps/]10.5.9.1
+tls://dns.quad9.net
+tls://dns.quad9.net:853#149.112.112.112
+```
+
+How the `[/zone/]server` prefix works: AdGuard Home routes any query for
+a hostname inside `*.mtrolle.com`, `*.lokal`, `*.vpn`, or `*.lps`
+directly to the local router (`10.5.9.1`). Everything else is sent to
+Quad9 over DoT. This replaces Pi-Hole's "Conditional Forwarding"
+feature.
+
+The second Quad9 line uses the explicit-IP form
+(`tls://dns.quad9.net:853#149.112.112.112`) so the resolver can reach
+the secondary Quad9 address even when the primary is unreachable.
+
+**Bootstrap DNS servers:**
+
+```
+9.9.9.9
+149.112.112.112
+```
+
+Bootstrap is only used to resolve the DoT hostname (`dns.quad9.net`)
+once at startup.
+
+**DNSSEC** — leave enabled. Quad9 validates upstream and sets the AD
+flag; AdGuard Home re-validates on the way back to the client. The two
+layers are compatible over DoT (no spurious SERVFAILs).
+
+Click **Test upstreams** and confirm OK.
 
 ## DNS architecture
 
 ```
-client  ──>  AdGuard Home  ──>  Unbound  ──>  root / TLD / authoritative
-              (filter+UI)        (recursor)
+client  ──>  AdGuard Home  ──>  Quad9 (DoT 853)
+              (filter+UI)        (recursor+DNSSEC)
 ```
 
-- **AdGuard Home** handles filter lists, per-client rules, stats, and the
-  admin UI. It does *not* recurse when paired with Unbound.
-- **Unbound** is an iterative recursive resolver with local DNSSEC
-  validation and root hints. No third-party resolver (Quad9, Cloudflare,
-  Google, etc.) sees your queries by default.
+- **AdGuard Home** handles filter lists, per-client rules, stats, DNS
+  rewrites (split-horizon), and the admin UI.
+- **Quad9** handles recursion and DNSSEC validation upstream. Queries
+  leave the LAN encrypted (DoT, port 853).
 
-Trade-offs:
+Trade-offs vs. self-hosted recursion (e.g. Unbound):
 
 | Pro | Con |
 |---|---|
-| No third-party telemetry on your DNS traffic | Cold cache is ~50–200 ms slower than CDN-backed resolvers |
-| Local DNSSEC validation | More moving parts (two containers, two health surfaces) |
-| Root hints stay fresh, no upstream lock-in | TLD servers rarely edge-cached → higher first-hit latency |
-
-A DoT-forwarding fallback is shipped commented out at the bottom of
-`unbound/unbound.conf`. Uncomment if root iteration becomes unreliable
-(e.g. ISP blocks outbound port 53).
+| Single container, far less operational surface | Quad9 sees the query stream (no-logging policy, but not zero trust) |
+| Fast cold cache (Quad9 anycast + edge caches) | No local recursion — you depend on Quad9 availability |
+| DoT encrypts queries over the WAN | TLS adds a few ms per cold query |
+| No root-hints / DNSSEC trust-anchor maintenance | |
 
 ### Common pitfall — REFUSED loops
 
-Never list your local router as an upstream DNS server in AdGuard. Most
-consumer routers (and many internal DNS appliances) do not perform
-recursion and will return `REFUSED`, which AdGuard logs noisily. Use the
-router only as a **Private reverse DNS server** target for `*.arpa`
-zones, or as a Conditional Forwarding entry for local zones — never as
-an upstream.
+Never list your local router as a *general* upstream DNS server in
+AdGuard. Most consumer routers (and many internal DNS appliances) do
+not perform recursion and will return `REFUSED`. Use the router only
+via the `[/zone/]server` prefix shown above (so it only sees queries
+for local zones), as a **Private reverse DNS server** target for
+`*.arpa` zones, or as a Conditional Forwarding entry for local zones —
+never as a catch-all upstream.
 
 ## Deploying with a stack manager
 
@@ -124,7 +149,7 @@ an upstream.
 
 Auto-update via Komodo's `Global Auto Update` procedure is **opt-in** —
 enable it only after the stack has run stable for at least one to two
-weeks, since both images here use the `:latest` tag and breaking
+weeks, since the image here uses the `:latest` tag and breaking
 upstream changes can land without warning.
 
 ### Portainer / Dockge
@@ -162,7 +187,6 @@ docker compose restart adguardhome
 ```bash
 docker compose ps
 docker logs adguardhome -f
-docker logs unbound -f
 docker exec adguardhome /opt/adguardhome/AdGuardHome -s status
 
 # DNS smoke tests against the stack

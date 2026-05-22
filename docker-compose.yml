@@ -1,47 +1,10 @@
 name: adguard-home
 
 services:
-  unbound:
-    container_name: unbound
-    image: mvance/unbound:latest
-    restart: unless-stopped
-    networks:
-      - dnsnet
-    volumes:
-      - ./unbound/unbound.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-    # Override the upstream /unbound.sh entrypoint — it tries to
-    # `cp` /dev/random|urandom|null into a chroot dir, which fails in
-    # unprivileged LXC containers ("Operation not permitted") and crashes
-    # the container. We invoke the binary directly. Before launching
-    # unbound we bootstrap the DNSSEC root trust anchor (the image does
-    # not ship /opt/unbound/etc/unbound/root.key), tolerating the exit
-    # code 1 that unbound-anchor returns on initial bootstrap from its
-    # compiled-in IANA key.
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        /opt/unbound/sbin/unbound-anchor -a /opt/unbound/etc/unbound/root.key || true
-        exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf
-    # Healthcheck: socket-existence in /proc/net/udp, no DNS query.
-    # The earlier drill-based check timed out during cold-cache root
-    # iteration even though unbound was up and listening.
-    healthcheck:
-      test: ["CMD-SHELL", "grep -q ':0035 ' /proc/net/udp"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
   adguardhome:
     container_name: adguardhome
     image: adguard/adguardhome:latest
     restart: unless-stopped
-    depends_on:
-      unbound:
-        condition: service_healthy
-    networks:
-      - dnsnet
     env_file:
       - path: .env
         required: false
@@ -64,10 +27,6 @@ services:
     volumes:
       - adguard_work:/opt/adguardhome/work
       - adguard_conf:/opt/adguardhome/conf
-
-networks:
-  dnsnet:
-    driver: bridge
 
 volumes:
   adguard_work:
