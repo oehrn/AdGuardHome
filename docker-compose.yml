@@ -9,6 +9,12 @@ services:
       - dnsnet
     volumes:
       - ./unbound/unbound.conf:/opt/unbound/etc/unbound/unbound.conf:ro
+    # Override the upstream /unbound.sh entrypoint — it tries to
+    # `cp` /dev/random|urandom|null into a chroot dir, which fails in
+    # unprivileged LXC containers ("Operation not permitted") and crashes
+    # the container. Invoke the unbound binary directly instead; Docker
+    # already provides /dev/random etc. inside the container.
+    entrypoint: ["/opt/unbound/sbin/unbound", "-d", "-c", "/opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
       test: ["CMD", "drill", "@127.0.0.1", "nlnetlabs.nl"]
       interval: 30s
