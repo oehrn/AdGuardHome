@@ -12,9 +12,17 @@ services:
     # Override the upstream /unbound.sh entrypoint — it tries to
     # `cp` /dev/random|urandom|null into a chroot dir, which fails in
     # unprivileged LXC containers ("Operation not permitted") and crashes
-    # the container. Invoke the unbound binary directly instead; Docker
-    # already provides /dev/random etc. inside the container.
-    entrypoint: ["/opt/unbound/sbin/unbound", "-d", "-c", "/opt/unbound/etc/unbound/unbound.conf"]
+    # the container. We invoke the binary directly. Before launching
+    # unbound we bootstrap the DNSSEC root trust anchor (the image does
+    # not ship /opt/unbound/etc/unbound/root.key), tolerating the exit
+    # code 1 that unbound-anchor returns on initial bootstrap from its
+    # compiled-in IANA key.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        /opt/unbound/sbin/unbound-anchor -a /opt/unbound/etc/unbound/root.key || true
+        exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf
     healthcheck:
       test: ["CMD", "drill", "@127.0.0.1", "nlnetlabs.nl"]
       interval: 30s
