@@ -23,12 +23,15 @@ services:
       - |
         /opt/unbound/sbin/unbound-anchor -a /opt/unbound/etc/unbound/root.key || true
         exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf
+    # Healthcheck: socket-existence in /proc/net/udp, no DNS query.
+    # The earlier drill-based check timed out during cold-cache root
+    # iteration even though unbound was up and listening.
     healthcheck:
-      test: ["CMD", "drill", "@127.0.0.1", "nlnetlabs.nl"]
+      test: ["CMD-SHELL", "grep -q ':0035 ' /proc/net/udp"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   adguardhome:
     container_name: adguardhome
